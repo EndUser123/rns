@@ -362,25 +362,6 @@ def get_session_transcript_text() -> str:
     return ""
 
 
-def get_last_assistant_message_text() -> str:
-    """Return only the last assistant message from the current session transcript.
-
-    This is the preferred input source for standalone /rns invocations
-    (when no inline text is provided), as it focuses on the most recent
-    output rather than the entire conversation history.
-
-    Returns empty string if no transcript or no assistant messages found.
-    """
-    transcript_path = get_current_transcript_path()
-    if transcript_path and transcript_path.exists():
-        last_msg = _get_last_assistant_message(transcript_path)
-        if last_msg:
-            return last_msg
-
-    # Fallback to full transcript if last message extraction fails
-    return get_session_transcript_text()
-
-
 def get_current_transcript_path() -> Path | None:
     """Find the current session's transcript path via Claude Code internals."""
     try:
