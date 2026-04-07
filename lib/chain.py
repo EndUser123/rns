@@ -71,12 +71,16 @@ def _get_rns_skill_examples() -> set[str]:
             content = skill_path.read_text(encoding="utf-8")
             # Extract lines that look like RNS action examples from the skill file
             for line in content.splitlines():
-                # Match action item lines within the skill documentation
-                if RNS_LINE_RE.match(line):
-                    examples.add(line.strip())
+                line_stripped = line.strip()
+                # Match action item lines: both "NUM[tag]" and "[tag] ID" formats
+                if RNS_LINE_RE.match(line_stripped):
+                    examples.add(line_stripped)
+                # Match numbered format: "1a [recover/high] description"
+                if re.match(r'^\s*\d+[a-z]\s+\[[^\]]+\]', line_stripped):
+                    examples.add(line_stripped)
                 # Also match domain headers in examples
-                if DOMAIN_HEADER_RE.match(line):
-                    examples.add(line.strip())
+                if DOMAIN_HEADER_RE.match(line_stripped):
+                    examples.add(line_stripped)
     except Exception:
         pass  # Fail open - if we can't read the skill file, don't filter
 
