@@ -273,6 +273,9 @@ def _heuristic_extract(text: str, session_id: str | None = None) -> list[CrossSe
     FILE_PATH_RE = re.compile(r"([\w/\\.-]+\.py:\d+)")
 
     for line in text.splitlines():
+        # Skip RNS-formatted lines - they're handled by Path A
+        if RNS_LINE_RE.match(line):
+            continue
         for signal_name, pattern, domain, default_action, default_priority in patterns:
             match = pattern.search(line)
             if not match:
