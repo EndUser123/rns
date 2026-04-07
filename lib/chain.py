@@ -60,6 +60,7 @@ def _get_rns_skill_examples() -> set[str]:
     """Load and cache example lines from RNS SKILL.md to filter them out.
 
     Returns a set of line texts that are known to be examples, not real findings.
+    Extracts entire example code blocks from the SKILL.md documentation.
     """
     if hasattr(_get_rns_skill_examples, "_cache"):
         return _get_rns_skill_examples._cache
@@ -69,18 +70,40 @@ def _get_rns_skill_examples() -> set[str]:
         skill_path = Path(__file__).parent.parent / "SKILL.md"
         if skill_path.exists():
             content = skill_path.read_text(encoding="utf-8")
-            # Extract lines that look like RNS action examples from the skill file
-            for line in content.splitlines():
-                line_stripped = line.strip()
-                # Match action item lines: both "NUM[tag]" and "[tag] ID" formats
-                if RNS_LINE_RE.match(line_stripped):
-                    examples.add(line_stripped)
-                # Match numbered format: "1a [recover/high] description"
-                if re.match(r'^\s*\d+[a-z]\s+\[[^\]]+\]', line_stripped):
-                    examples.add(line_stripped)
-                # Also match domain headers in examples
-                if DOMAIN_HEADER_RE.match(line_stripped):
-                    examples.add(line_stripped)
+            lines = content.splitlines()
+
+            # Find code blocks (markdown format: ```lang to ```)
+            in_code_block = False
+            block_start = -1
+
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                # Check for code block boundaries
+                if stripped.startswith('```'):
+                    if not in_code_block:
+                        in_code_block = True
+                        block_start = i
+                    else:
+                        # End of code block - extract all lines in this block
+                        for j in range(block_start + 1, i):
+                            block_line = lines[j].strip()
+                            if block_line:
+                                examples.add(block_line)
+                        in_code_block = False
+                        block_start = -1
+                elif in_code_block:
+                    # Will add when block ends
+                    pass
+                else:
+                    # Outside code blocks, match common RNS patterns
+                    # Action items: "1a [tag]" or "[tag] ID" formats
+                    if re.match(r'^\s*\d+[a-z]\s+\[[^\]]+\]', stripped):
+                        examples.add(stripped)
+                    if RNS_LINE_RE.match(stripped):
+                        examples.add(stripped)
+                    # Domain headers with or without numbers/counts
+                    if re.match(r'^[\d]*\s*[🔧🧪📄🔒⚡🐙📦📌]', stripped):
+                        examples.add(stripped)
     except Exception:
         pass  # Fail open - if we can't read the skill file, don't filter
 
