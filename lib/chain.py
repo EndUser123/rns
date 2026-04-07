@@ -44,9 +44,9 @@ class ChainRNSResult:
 # Pattern matching for RNS action items
 # ---------------------------------------------------------------------------
 
-# Matches lines like: [recover/high] QUAL-001 Fix something @ file:line
+# Matches lines like: 1a [recover/high] Fix something @ file:line
 RNS_LINE_RE = re.compile(
-    r'^\s*\[([^\]]+)\]\s+([A-Z]+-\d+)\s+(.+?)(?:\s+@\s+([^@\s]+))?\s*$'
+    r'^\s*(\d+[a-z])\s+\[([^\]]+)\]\s+(.+?)(?:\s+@\s+([^@\s]+))?\s*$'
 )
 
 # Matches domain emoji headers like: 🔧 QUALITY
