@@ -56,6 +56,34 @@ DOMAIN_HEADER_RE = re.compile(r'^([🔧🧪📄🔒⚡🐙📦📌])\s+([A-Z_]+)
 DO_ALL_RE = re.compile(r'^0\s*[-—]\s*Do ALL')
 
 
+def _get_rns_skill_examples() -> set[str]:
+    """Load and cache example lines from RNS SKILL.md to filter them out.
+
+    Returns a set of line texts that are known to be examples, not real findings.
+    """
+    if hasattr(_get_rns_skill_examples, "_cache"):
+        return _get_rns_skill_examples._cache
+
+    examples: set[str] = set()
+    try:
+        skill_path = Path(__file__).parent.parent / "SKILL.md"
+        if skill_path.exists():
+            content = skill_path.read_text(encoding="utf-8")
+            # Extract lines that look like RNS action examples from the skill file
+            for line in content.splitlines():
+                # Match action item lines within the skill documentation
+                if RNS_LINE_RE.match(line):
+                    examples.add(line.strip())
+                # Also match domain headers in examples
+                if DOMAIN_HEADER_RE.match(line):
+                    examples.add(line.strip())
+    except Exception:
+        pass  # Fail open - if we can't read the skill file, don't filter
+
+    _get_rns_skill_examples._cache = examples
+    return examples
+
+
 def _extract_actions_from_text(text: str, session_id: str | None = None) -> list[CrossSessionAction]:
     """Extract RNS-formatted action items from text.
 
@@ -63,7 +91,13 @@ def _extract_actions_from_text(text: str, session_id: str | None = None) -> list
     - Path A (primary): RNS-tagged lines ([recover/high] etc.)
     - Path B (fallback): Heuristic pattern extraction when Path A finds nothing
       AND text contains signal keywords OR text is longer than 200 chars.
+
+    Filters out example content from the RNS skill's own SKILL.md to avoid
+    treating documentation examples as real findings.
     """
+    # Load known examples to filter out
+    rns_examples = _get_rns_skill_examples()
+
     # Path A: RNS-tagged extraction
     actions: list[CrossSessionAction] = []
     current_domain = "other"
