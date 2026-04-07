@@ -151,7 +151,9 @@ def _extract_actions_from_text(text: str, session_id: str | None = None) -> list
 
             # Filter out examples from RNS SKILL.md documentation
             line_stripped = line.strip()
-            if line_stripped in rns_examples:
+            # Normalize priority abbreviations for matching
+            normalized_line = line_stripped.replace('med', 'medium').replace('crit', 'critical')
+            if normalized_line in rns_examples or line_stripped in rns_examples:
                 continue
 
             actions.append(CrossSessionAction(
