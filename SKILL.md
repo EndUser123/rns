@@ -34,7 +34,7 @@ Convert any LLM output into a structured Recommended Next Steps (RNS) format wit
 /rns {optional pasted text or @reference}
 ```
 
-If no text is provided, RNS will analyze the most recent LLM output in the conversation.
+If no text is provided, RNS will analyze the full session transcript (current session plus any carryover items from the session chain).
 
 ## Output Format
 
