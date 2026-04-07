@@ -153,6 +153,7 @@ Before emitting RNS output, `/rns` should run a short internal action-extraction
 - What recommendation belongs to a different owning skill, not the current executor?
 - What would a weaker model over-extract here and turn into noisy action spam?
 - What part of this output would be hard to reverse if the action is wrong?
+- [COMPLETENESS] Have ALL input rows been accounted for? Each row must have exactly one disposition: MAPPED, REJECTED (explicit rationale), or DEFERRED (named owner + trigger). Severity alone is NOT a valid exclusion criterion — flag any row absent from output without explicit disposition.
 
 These are internal self-check prompts. They are not default user-facing questions and should only surface to the user when `/rns` is genuinely blocked and cannot proceed safely without clarification.
 
