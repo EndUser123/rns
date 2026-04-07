@@ -64,6 +64,26 @@ RNS outputs a **dynamic-domain, flat-numbered** action list:
 | **File references** | `@ file:line` suffix when available |
 | **Do All directive** | 0 — Do ALL Recommended Next Actions (N items) |
 
+### Gap Coverage (for structured inputs like gap tables)
+
+When processing structured inputs (skill-audit gap tables, pre-mortem findings), each row must receive an explicit **disposition**:
+
+| Disposition | Meaning | When to Use |
+|-------------|---------|-------------|
+| **MAPPED** | Gap has a corresponding RNS action item | Default — if the gap needs action |
+| **REJECTED** | Gap is valid but intentionally not acted on | Out of scope, already handled elsewhere, or risk accepted with rationale |
+| **DEFERRED** | Gap is valid but deferred to future session | Named owner + trigger condition required |
+
+Render gap coverage as a `📋 GAP COVERAGE` section after domain groups and before the do-all footer:
+```
+📋 GAP COVERAGE (7 items)
+  5 MAPPED → see actions above
+  1 REJECTED — "MECHANISM_LEAKAGE: hardcoded @gitready is low-risk branding, not a functional issue"
+  1 DEFERRED — "ASSURANCE: AGENTS.template.md deferred to /skill-ship (owns skill wiring)"
+```
+
+**Rule**: Severity alone is NOT a valid exclusion. MEDIUM/LOW items require explicit REJECTED or DEFERRED disposition, not silence.
+
 ### Domain Emoji Mapping
 
 | Domain | Emoji |
