@@ -168,8 +168,15 @@ def _extract_actions_from_text(text: str, session_id: str | None = None) -> list
     if len(actions) == 0:
         if _has_signal_keywords(text) or len(text) > 200:
             path_b_results = _heuristic_extract(text, session_id)
+            # Filter out RNS SKILL.md examples from Path B results
+            filtered_path_b = []
+            for action in path_b_results:
+                # Check if the description matches any known example
+                if action.description in rns_examples:
+                    continue
+                filtered_path_b.append(action)
             # Within-path dedup for Path B
-            path_b_results = _dedupe_actions(path_b_results)
+            path_b_results = _dedupe_actions(filtered_path_b)
             actions.extend(path_b_results)
 
     return actions
