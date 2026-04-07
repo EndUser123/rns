@@ -5,9 +5,8 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
-# Claude Code
-.claude/cache/
-.claude/state*.json
+# Claude Code (local state - not for git commit)
+.claude/
 
 # OS
 .DS_Store
