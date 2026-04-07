@@ -131,7 +131,8 @@ def _extract_actions_from_text(text: str, session_id: str | None = None) -> list
         # Check for action item
         item_match = RNS_LINE_RE.match(line)
         if item_match:
-            tag = item_match.group(1)
+            # item_match.group(1) = number (e.g., "1a") - not used
+            tag = item_match.group(2)  # tag (e.g., "recover/high")
             domain = current_domain
             # Parse tag: e.g. "recover/high" or "prevent/med"
             if '/' in tag:
