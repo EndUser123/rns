@@ -174,7 +174,9 @@ def _extract_actions_from_text(text: str, session_id: str | None = None) -> list
             filtered_path_b = []
             for action in path_b_results:
                 # Check if the description matches any known example
-                if action.description in rns_examples:
+                desc = action.description
+                normalized_desc = desc.replace('med', 'medium').replace('crit', 'critical')
+                if normalized_desc in rns_examples or desc in rns_examples:
                     continue
                 filtered_path_b.append(action)
             # Within-path dedup for Path B
