@@ -7,6 +7,7 @@ import logging
 import re
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -45,8 +46,9 @@ class ChainRNSResult:
 # ---------------------------------------------------------------------------
 
 # Matches lines like: 1a [recover/high] Fix something @ file:line
+# Also matches the shorter format: [recover/high] Fix something @ file:line
 RNS_LINE_RE = re.compile(
-    r'^\s*(\d+[a-z])\s+\[([^\]]+)\]\s+(.+?)(?:\s+@\s+([^@\s]+))?\s*$'
+    r'^\s*(?:(\d+[a-z])\s+)?\[([^\]]+)\]\s+(.+?)(?:\s+@\s+([^@\s]+))?\s*$'
 )
 
 # Matches domain emoji headers like: 🔧 QUALITY
@@ -103,7 +105,7 @@ def _extract_actions_from_text(text: str, session_id: str | None = None) -> list
 
     Dual-path extraction:
     - Path A (primary): RNS-tagged lines ([recover/high] etc.)
-    - Path B (fallback): Heuristic pattern extraction when Path A finds nothing
+    - Path B (fallback): Heuristic pattern extraction when Path A finds nothing,
       AND text contains signal keywords OR text is longer than 200 chars.
 
     Filters out example content from the RNS skill's own SKILL.md to avoid
@@ -150,11 +152,23 @@ def _extract_actions_from_text(text: str, session_id: str | None = None) -> list
             desc = item_match.group(3).strip()
             file_ref = item_match.group(4)
 
+            # Strip common ID prefixes from description (e.g., "QUAL-001 Fix this" → "Fix this")
+            id_prefix_re = re.compile(r'^[A-Z_]+-\d+\s+', re.IGNORECASE)
+            desc = id_prefix_re.sub('', desc)
+
             # Filter out examples from RNS SKILL.md documentation
             line_stripped = line.strip()
             # Normalize priority abbreviations for matching
             normalized_line = line_stripped.replace('med', 'medium').replace('crit', 'critical')
             if normalized_line in rns_examples or line_stripped in rns_examples:
+                continue
+
+            # Filter out items from previous RNS output (description starts with [UNVERIFIED])
+            if desc.startswith('[UNVERIFIED]'):
+                continue
+
+            # Filter out RNS documentation template placeholders
+            if desc.startswith('DOC-N Update {doc file}'):
                 continue
 
             actions.append(CrossSessionAction(
@@ -168,9 +182,9 @@ def _extract_actions_from_text(text: str, session_id: str | None = None) -> list
             ))
 
     # Path B: Heuristic extraction (fallback)
-    # Only run Path B if Path A found at least one RNS-tagged item.
-    # This prevents Path B from extracting random prose from large transcript histories.
-    if len(actions) > 0 and (_has_signal_keywords(text) or len(text) > 200):
+    # Run Path B when Path A found nothing AND text has signal keywords OR text > 200 chars.
+    # This prevents Path B from extracting random prose from short, low-signal text.
+    if len(actions) == 0 and (_has_signal_keywords(text) or len(text) > 200):
         path_b_results = _heuristic_extract(text, session_id)
         # Filter out RNS SKILL.md examples from Path B results
         filtered_path_b = []
@@ -185,12 +199,51 @@ def _extract_actions_from_text(text: str, session_id: str | None = None) -> list
         path_b_results = _dedupe_actions(filtered_path_b)
         actions.extend(path_b_results)
 
+    # Quality filter: Remove low-quality items
+    actions = [a for a in actions if _is_actionable(a)]
+
     return actions
 
 
 # ---------------------------------------------------------------------------
 # Path B: Heuristic extraction for unstructured text
 # ---------------------------------------------------------------------------
+
+# Quality thresholds for action items
+MIN_DESCRIPTION_LENGTH = 30
+MIN_WORDS = 4
+MAX_DESCRIPTION_LENGTH = 500
+
+# Meta-directive patterns that don't represent actionable items
+META_DIRECTIVE_PREFIXES = (
+    "MANDATORY:", "FORMAT:", "ID reference:", "NOTE:", "WARNING:",
+    "TODO:", "FIXME:", "HACK:", "XXX:", "TEMP:",
+)
+
+# Patterns that indicate non-actionable content (documentation, dialogue, etc.)
+DOCUMENTATION_PATTERNS = [
+    r'^#+\s+\w',  # Markdown headers: ##, ###, etc.
+    r'^\|',  # Markdown table rows
+    r'^(assistant|user|system):',  # Transcript dialogue prefixes
+    r'^\s*-\s+\*\*',  # Markdown list items with bold (documentation format)
+    r'^\s*\d+\.\s+',  # Numbered list items (documentation)
+    r'See `.*` for',  # Documentation references: "See `references/foo.md` for"
+    r'^\s*```\s*$',  # Markdown code fence markers
+    r'^\*\*[^*]+\*\*:\s*',  # Bold headers like "**Role:**", "**Your role is**"
+    r'^You are (?:a|an|the)',  # Role definitions: "You are a specialist..."
+    r'^Your role (?:is|as)',  # Role definitions
+    r'^\*\*Your (?:role|identity)',  # Bold role/identity headers
+    r'^\*\*Only',  # "**Only implement if..." - documentation constraint
+    r'^(?:When|If|Before|After) \w+,.*should',  # Generic prescription statements
+    r'^- (?:Run|Use|Dispatch|Record)',  # Documentation step instructions
+    r'^\s*\|.*\|.*\|',  # Multi-column markdown tables
+    r'^--\w+',  # Command-line flags: --root-cause, --fix, etc.
+    r'must be (?:true|false|set)',  # Documentation field requirements
+    r'^\w+ claims must include',  # Documentation rules: "All claims must include..."
+    r'Your (?:first|next) action must be',  # Workflow documentation
+    r'^Would you like me to',  # Assistant dialogue offering to help
+    r'Every recommended fix gets classified',  # Documentation description
+]
 
 # Signal keywords that indicate substantive content regardless of length
 SIGNAL_KEYWORDS = [
@@ -203,6 +256,46 @@ SIGNAL_KEYWORDS = [
     "gap", "not implemented", "not yet",
     "investigat", "diagnos", "root cause", "found that",
 ]
+
+
+def _is_actionable(action: CrossSessionAction) -> bool:
+    """Check if action is actionable enough to keep.
+
+    Filters out:
+    - Items too short to be meaningful
+    - Meta-directives (MANDATORY, FORMAT, etc.)
+    - ID-only references with no action
+    - Truncated descriptions
+    - Documentation patterns (headers, tables, dialogue)
+    """
+    desc = action.description.strip()
+
+    # Length threshold
+    if len(desc) < MIN_DESCRIPTION_LENGTH:
+        return False
+
+    # Word count threshold
+    if len(desc.split()) < MIN_WORDS:
+        return False
+
+    # Meta-directive filter
+    if desc.startswith(META_DIRECTIVE_PREFIXES):
+        return False
+
+    # ID-only reference filter - filters any description that starts with ID reference
+    if desc.startswith('ID reference:'):
+        return False
+
+    # Truncated description filter (ends with ...)
+    if desc.endswith('...') and len(desc) < MAX_DESCRIPTION_LENGTH:
+        return False
+
+    # Documentation pattern filter - exclude markdown headers, tables, dialogue, etc.
+    for pattern in DOCUMENTATION_PATTERNS:
+        if re.match(pattern, desc, re.IGNORECASE | re.MULTILINE):
+            return False
+
+    return True
 
 
 def _has_signal_keywords(text: str) -> bool:
@@ -275,6 +368,9 @@ def _heuristic_extract(text: str, session_id: str | None = None) -> list[CrossSe
     for line in text.splitlines():
         # Skip RNS-formatted lines - they're handled by Path A
         if RNS_LINE_RE.match(line):
+            continue
+        # Skip lines from previous RNS output (contain [UNVERIFIED] marker)
+        if '[UNVERIFIED]' in line:
             continue
         for signal_name, pattern, domain, default_action, default_priority in patterns:
             match = pattern.search(line)
@@ -393,20 +489,74 @@ def get_session_transcript_text() -> str:
 
 
 def get_current_transcript_path() -> Path | None:
-    """Find the current session's transcript path via Claude Code internals."""
+    """Find the current session's transcript path.
+
+    Strategy:
+    1. Query the session harness via SESSION_REVERSION_INPROCESS state
+       (set during session restore/compact - harness knows the transcript path)
+    2. Fall back to WT_SESSION terminal ID → handoff → transcript_path
+    3. Last resort: env vars, then mtime-based selection
+
+    This avoids the problem of using mtime-based selection which can
+    pick wrong files when multiple terminals or pytest runs exist.
+    """
     try:
         from pathlib import Path as PPath
+
         import os
-        # Claude Code stores transcripts in the projects directory
-        # Use forward slashes for cross-platform compatibility in bash
-        base = PPath.home() / ".claude" / "projects"
-        if not base.exists():
+
+        # 1. Query the session harness for transcript path
+        # SESSION_REVERSION_INPROCESS is set during session restore/compact
+        # The harness writes transcript_path into the compact/restore state
+        for key in ("CLAUDE_RESTORE_TRANSCRIPT", "CLAUDE_TRANSCRIPT_PATH",
+                   "SESSION_TRANSCRIPT_PATH"):
+            val = os.environ.get(key)
+            if val:
+                path = PPath(val)
+                if path.exists():
+                    return path
+
+        # 2. Use WT_SESSION to find the current terminal's handoff file
+        wt_session = os.environ.get("WT_SESSION", "")
+        if wt_session:
+            handoff_dir = PPath.home() / ".claude" / "state" / "handoff"
+            if handoff_dir.exists():
+                # Look for handoff file matching current WT_SESSION
+                handoff_pattern = f"console_{wt_session}*_handoff.json"
+                matches = list(handoff_dir.glob(handoff_pattern))
+                if matches:
+                    try:
+                        content = json.loads(matches[0].read_text(encoding="utf-8"))
+                        # Check both resume_snapshot and direct transcript_path
+                        tpath = (content.get("resume_snapshot", {})
+                                 .get("transcript_path"))
+                        if not tpath:
+                            tpath = content.get("transcript_path")
+                        if tpath:
+                            tp = PPath(tpath)
+                            if tp.exists():
+                                return tp
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
+        # 3. Fallback: projects dir — most recently modified
+        claude_base = PPath.home() / ".claude"
+        projects_dir = claude_base / "projects"
+
+        if not projects_dir.exists():
             return None
-        candidates = list(base.rglob("*.jsonl"))
+
+        candidates: list[PPath] = []
+        for subdir in projects_dir.iterdir():
+            if subdir.is_dir():
+                for jsonl in subdir.glob("*.jsonl"):
+                    candidates.append(jsonl)
+
         if not candidates:
             return None
-        # Return the most recently modified
+
         return max(candidates, key=lambda p: p.stat().st_mtime)
+
     except Exception:
         return None
 
@@ -508,6 +658,9 @@ def get_rns_from_session_chain(session_id: str) -> ChainRNSResult:
     if not chain_result.entries:
         return result
 
+    # Staleness filter settings
+    STALE_CUTOFF_DAYS = 7
+
     # Process all sessions in the chain (oldest to newest)
     for entry in chain_result.entries:
         sid = entry.session_id
@@ -515,6 +668,13 @@ def get_rns_from_session_chain(session_id: str) -> ChainRNSResult:
 
         if not tpath or not tpath.exists():
             continue
+
+        # Check for staleness - skip old sessions
+        if entry.created:
+            age = datetime.now() - entry.created
+            if age > timedelta(days=STALE_CUTOFF_DAYS):
+                logger.debug(f"Skipping stale session {sid[:8]}... ({age.days} days old)")
+                continue
 
         # Read full transcript text
         text = _read_transcript_text(tpath)

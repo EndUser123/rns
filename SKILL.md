@@ -1,7 +1,7 @@
 ---
 name: rns
 description: Dynamic actions from findings w/ recover/prevent/realize tags, priority, file:line. Converts unstructured LLM output to selectable RNS actions.
-version: 1.2.0
+version: 1.2.1
 triggers:
   - "/rns"
   - "/rns {text}"
@@ -35,6 +35,8 @@ Convert any LLM output into a structured Recommended Next Steps (RNS) format wit
 ```
 
 If no text is provided, RNS will analyze the full session transcript (current session plus any carryover items from the session chain).
+
+> **Implementation note**: `/rns` is LLM-executed only — it has no CLI or standalone Python script. The skill reads the session transcript via `lib/chain.py` and renders RNS output directly.
 
 ## Output Format
 
@@ -252,3 +254,24 @@ Where: `RNS|D|` = domain header, `RNS|A|` = action item, `RNS|Z|` = terminator. 
 - If a finding cannot be made concrete (no file, no scope), phrase it generically but still include it.
 - Do NOT skip findings because they're "obvious" — include everything.
 - Do NOT invent severity ratings not present in the source. Infer only when the source implies but doesn't label.
+
+### Background Command Display Behavior
+
+**Known Issue**: When RNS generates output while a background command is running, Claude Code may re-display the assistant's message when the background command completes. This can cause the RNS output to appear twice.
+
+**Avoidance Pattern**: To prevent double-display:
+1. Complete all background operations BEFORE generating RNS output
+2. Avoid using `run_in_background=true` for commands that analyze the current session's transcript
+3. If background commands are necessary for session chain analysis, run them synchronously or capture results to a file before rendering
+
+**Example pattern**:
+```python
+# BAD - causes double display
+background_cmd = Bash(..., run_in_background=True)
+render_rns_output()  # Generates output while background runs
+# Background completion → re-displays output
+
+# GOOD - no double display
+result = Bash(...)  # Run synchronously
+render_rns_output()  # Output after everything completes
+```

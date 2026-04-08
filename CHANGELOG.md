@@ -2,6 +2,13 @@
 
 All notable changes to RNS are documented here.
 
+## [1.2.1] — 2026-04-07
+
+### Fixed
+- **LOW**: Documented background command double-display behavior — added "Background Command Display Behavior" section to SKILL.md explaining the Claude Code platform behavior where RNS output appears twice when generated while a background command is running. Includes avoidance patterns for synchronous execution and result capture.
+
+---
+
 ## [1.2.0] — 2026-04-06
 
 ### Fixed
