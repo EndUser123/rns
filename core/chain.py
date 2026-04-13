@@ -27,8 +27,12 @@ class CrossSessionAction:
     description: str
     file_ref: str | None = None
     session_id: str | None = None
-    effort: str | None = None
+    effort: str | None = None  # e.g. "~2min", "~5min", "~15min", "~30min", "~1hr"
     unverified: bool = False  # True for Path B (heuristic) items
+    owner: str | None = None  # Who should execute this (solo dev = "me" or context name)
+    done: bool = False  # True = completed (shown in DONE section with strikethrough)
+    caused_by: str | None = None  # ID of action this is caused-by (dependency ordering)
+    blocks: str | None = None  # ID of action this blocks (dependency ordering)
 
 
 @dataclass
@@ -69,7 +73,7 @@ def _get_rns_skill_examples() -> set[str]:
 
     examples: set[str] = set()
     try:
-        skill_path = Path(__file__).parent.parent / "SKILL.md"
+        skill_path = Path(__file__).parent.parent.parent / ".claude" / "skills" / "rns" / "SKILL.md"
         if skill_path.exists():
             content = skill_path.read_text(encoding="utf-8")
             for line in content.splitlines():
@@ -77,9 +81,6 @@ def _get_rns_skill_examples() -> set[str]:
                 # Only match RNS output format lines, not Python code or usage syntax
                 # Domain headers: "1 🔧 QUALITY (2)" or "🔧 QUALITY"
                 if re.match(r'^\d*\s*[🔧🧪📄🔒⚡🐙📦📌]\s+', stripped):
-                    examples.add(stripped)
-                # Action items: "1a [tag] description" or "[tag] ID description"
-                if re.match(r'^\s*\d+[a-z]\s+\[[^\]]+\]', stripped):
                     examples.add(stripped)
                 # Separator lines
                 if stripped.startswith('━━━━━━━━━━━━━━━━━━━━━━━━━━━━'):
@@ -98,6 +99,10 @@ def _get_rns_skill_examples() -> set[str]:
 
     _get_rns_skill_examples._cache = examples
     return examples
+
+
+DEP_ANNOTATION_RE = re.compile(r'\[caused-by:\s*([^\]]+)\]')
+BLOCK_ANNOTATION_RE = re.compile(r'\[blocks:\s*([^\]]+)\]')
 
 
 def _extract_actions_from_text(text: str, session_id: str | None = None) -> list[CrossSessionAction]:
@@ -171,6 +176,20 @@ def _extract_actions_from_text(text: str, session_id: str | None = None) -> list
             if desc.startswith('DOC-N Update {doc file}'):
                 continue
 
+            # Extract dependency annotations [caused-by: ID] and [blocks: ID]
+            caused_by = None
+            blocks = None
+            caused_match = DEP_ANNOTATION_RE.search(line)
+            if caused_match:
+                caused_by = caused_match.group(1).strip()
+            blocks_match = BLOCK_ANNOTATION_RE.search(line)
+            if blocks_match:
+                blocks = blocks_match.group(1).strip()
+
+            # Strip dependency annotations from the description
+            desc = DEP_ANNOTATION_RE.sub('', desc).strip()
+            desc = BLOCK_ANNOTATION_RE.sub('', desc).strip()
+
             actions.append(CrossSessionAction(
                 domain=domain,
                 action=action,
@@ -179,6 +198,8 @@ def _extract_actions_from_text(text: str, session_id: str | None = None) -> list
                 file_ref=file_ref,
                 session_id=session_id,
                 unverified=False,
+                caused_by=caused_by,
+                blocks=blocks,
             ))
 
     # Path B: Heuristic extraction (fallback)
@@ -210,8 +231,8 @@ def _extract_actions_from_text(text: str, session_id: str | None = None) -> list
 # ---------------------------------------------------------------------------
 
 # Quality thresholds for action items
-MIN_DESCRIPTION_LENGTH = 30
-MIN_WORDS = 4
+MIN_DESCRIPTION_LENGTH = 8
+MIN_WORDS = 2
 MAX_DESCRIPTION_LENGTH = 500
 
 # Meta-directive patterns that don't represent actionable items
@@ -488,6 +509,29 @@ def get_session_transcript_text() -> str:
     return ""
 
 
+def _resolve_current_transcript_via_chain_miner() -> tuple[Path | None, str | None]:
+    """Find current transcript path and session ID using claude-chain-miner.
+
+    Uses the miner's reverse-lookup strategy: find newest .jsonl in projects dir.
+    This works even when no handoff file exists for the current session
+    (PreCompact hasn't run yet).
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / ".." / ".." / "packages" / "claude-chain-miner"))
+        from scripts.walker import _resolve_current_transcript, _session_id_from_path
+    except ImportError:
+        return None, None
+
+    try:
+        tpath = _resolve_current_transcript()
+        if tpath and tpath.exists():
+            sid = _session_id_from_path(tpath)
+            return tpath, sid
+    except Exception:
+        pass
+    return None, None
+
+
 def get_current_transcript_path() -> Path | None:
     """Find the current session's transcript path.
 
@@ -495,7 +539,8 @@ def get_current_transcript_path() -> Path | None:
     1. Query the session harness via SESSION_REVERSION_INPROCESS state
        (set during session restore/compact - harness knows the transcript path)
     2. Fall back to WT_SESSION terminal ID → handoff → transcript_path
-    3. Last resort: env vars, then mtime-based selection
+    3. Last resort: env vars for current transcript
+    4. Chain-miner fallback: newest .jsonl by mtime (works when no handoff exists yet)
 
     This avoids the problem of using mtime-based selection which can
     pick wrong files when multiple terminals or pytest runs exist.
@@ -539,26 +584,34 @@ def get_current_transcript_path() -> Path | None:
                     except (json.JSONDecodeError, OSError):
                         pass
 
-        # 3. Fallback: projects dir — most recently modified
-        claude_base = PPath.home() / ".claude"
-        projects_dir = claude_base / "projects"
+        # 3. Fallback: use Claude Code's own transcript path env var
+        # This is set during session start and is more reliable than mtime selection
+        for key in ("CLAUDE_CURRENT_TRANSCRIPT", "CLAUDE_SESSION_TRANSCRIPT"):
+            val = os.environ.get(key)
+            if val:
+                path = PPath(val)
+                if path.exists():
+                    return path
 
-        if not projects_dir.exists():
-            return None
-
-        candidates: list[PPath] = []
-        for subdir in projects_dir.iterdir():
-            if subdir.is_dir():
-                for jsonl in subdir.glob("*.jsonl"):
-                    candidates.append(jsonl)
-
-        if not candidates:
-            return None
-
-        return max(candidates, key=lambda p: p.stat().st_mtime)
+        # mtime-based fallback is UNRELIABLE — it picks wrong transcripts when
+        # multiple terminals/sessions are active. Return None instead and let
+        # the caller handle gracefully (empty RNS, not wrong RNS).
+        # NOTE: This return is inside the try block. We do NOT return here so
+        # that the except below can run. The chain-miner fallback at step 4
+        # runs OUTSIDE the try/except to avoid being swallowed by a return.
+        transcript_path = None
 
     except Exception:
         return None
+
+    # 4. Chain-miner fallback: use claude-chain-miner's _resolve_current_transcript
+    # This finds the newest .jsonl in the projects dir via mtime,
+    # which is the correct current session transcript when no handoff exists yet.
+    # This runs OUTSIDE the try/except so it is NOT swallowed by the exception handler.
+    tpath, sid = _resolve_current_transcript_via_chain_miner()
+    if tpath and tpath.exists():
+        return tpath
+    return None
 
 
 def _get_last_assistant_message(transcript_path: Path | None) -> str | None:
@@ -642,27 +695,28 @@ def get_rns_from_session_chain(session_id: str) -> ChainRNSResult:
         ChainRNSResult with current and carryover action items
     """
     try:
-        from search_research.session_chain import walk_session_chain
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / ".." / ".." / "packages" / "claude-chain-miner"))
+        from scripts.walker import walk_handoff_chain
     except ImportError:
-        logger.debug("search_research not available, skipping chain traversal")
+        logger.debug("claude-chain-miner not available, skipping chain traversal")
         return ChainRNSResult()
 
     try:
-        chain_result = walk_session_chain(session_id, newest_first=False)
+        chain_entries, origin = walk_handoff_chain(max_depth=20)
     except Exception as e:
         logger.warning("Failed to walk session chain: %s", e)
         return ChainRNSResult()
 
-    result = ChainRNSResult(chain_depth=len(chain_result.entries))
+    result = ChainRNSResult(chain_depth=len(chain_entries))
 
-    if not chain_result.entries:
+    if not chain_entries:
         return result
 
     # Staleness filter settings
     STALE_CUTOFF_DAYS = 7
 
     # Process all sessions in the chain (oldest to newest)
-    for entry in chain_result.entries:
+    for entry in chain_entries:
         sid = entry.session_id
         tpath = entry.transcript_path
 
@@ -671,10 +725,21 @@ def get_rns_from_session_chain(session_id: str) -> ChainRNSResult:
 
         # Check for staleness - skip old sessions
         if entry.created:
-            age = datetime.now() - entry.created
-            if age > timedelta(days=STALE_CUTOFF_DAYS):
-                logger.debug(f"Skipping stale session {sid[:8]}... ({age.days} days old)")
-                continue
+            try:
+                # created may be a string (ISO format) or a datetime
+                if isinstance(entry.created, str):
+                    created_dt = datetime.fromisoformat(entry.created)
+                elif isinstance(entry.created, datetime):
+                    created_dt = entry.created
+                else:
+                    created_dt = None
+                if created_dt:
+                    age = datetime.now() - created_dt
+                    if age > timedelta(days=STALE_CUTOFF_DAYS):
+                        logger.debug("Skipping stale session %s... (%d days old)", sid[:8], age.days)
+                        continue
+            except (ValueError, TypeError):
+                pass
 
         # Read full transcript text
         text = _read_transcript_text(tpath)
@@ -683,7 +748,7 @@ def get_rns_from_session_chain(session_id: str) -> ChainRNSResult:
         actions = _extract_actions_from_text(text, session_id=sid)
 
         # The last session in the chain is the "current" one for RNS purposes
-        is_current = (entry == chain_result.entries[-1])
+        is_current = (entry == chain_entries[-1])
 
         if is_current:
             result.current_items = actions

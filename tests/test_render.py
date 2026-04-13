@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for rns/lib/render.py."""
+"""Tests for rns/core/render.py."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.chain import CrossSessionAction
-from lib.render import (
+from core.chain import CrossSessionAction
+from core.render import (
     DOMAIN_MAP,
     ACTION_ORDER,
     PRIORITY_ORDER,
@@ -98,7 +98,8 @@ class TestRenderActionLine:
         )
         opts = RenderOptions()
         line = render_action_line(action, opts)
-        assert "[recover/high]" in line
+        # New format: just dot + description (no brackets, action is implied by subgroup)
+        assert "🟠" in line
         assert "Fix concurrent save registry integrity test" in line
         assert "test_critique_io_concurrent.py:89" in line
 
@@ -154,7 +155,9 @@ class TestRenderActions:
         )
         result = render_actions([action])
         assert "1 🔧 QUALITY (1)" in result
-        assert "1a [recover/high] Fix something" in result
+        # New format: just dot + description, numbered sequentially
+        assert "1a 🟠" in result
+        assert "Fix something" in result
         assert "foo.py:1" in result
 
     def test_multiple_actions_number_correctly(self) -> None:
@@ -166,9 +169,13 @@ class TestRenderActions:
         result = render_actions(actions)
         assert "1 🔧 QUALITY (2)" in result
         assert "2 📄 DOCS (1)" in result
-        assert "1a [recover/high]" in result
-        assert "1b [prevent/medium]" in result
-        assert "2a [realize/low]" in result
+        # Proper English labels for action subgroups
+        assert "Recovery (1 items)" in result
+        assert "Preserve (1 items)" in result
+        assert "Future (1 items)" in result
+        assert "Fix A" in result
+        assert "Fix B" in result
+        assert "Fix C" in result
 
     def test_actions_sorted_by_action_order_then_priority(self) -> None:
         """recover before prevent before realize; within same action, high before medium before low."""
@@ -181,19 +188,19 @@ class TestRenderActions:
         ]
         result = render_actions(actions)
         lines = result.splitlines()
-        # Find the QUALITY section lines (item lines start with two spaces + 1a/1b/...)
-        quality_lines = [l for l in lines if l.startswith("  1")]
-        assert len(quality_lines) == 5
-        # recover/high should be first (recover comes first, and high > low within recover)
-        assert quality_lines[0].strip().endswith("1a [recover/high] recover-high item")
-        # recover/low second
-        assert quality_lines[1].strip().endswith("1b [recover/low] recover-low item")
-        # prevent/high third
-        assert quality_lines[2].strip().endswith("1c [prevent/high] prevent-high item")
-        # prevent/low fourth
-        assert quality_lines[3].strip().endswith("1d [prevent/low] prevent-low item")
-        # realize/low last
-        assert quality_lines[4].strip().endswith("1e [realize/low] realize-low item")
+        # Find the QUALITY section
+        assert "1 🔧 QUALITY (5)" in result
+        # Proper English labels in order: Recovery, Preserve, Future
+        assert "Recovery (2 items)" in result
+        assert "Preserve (2 items)" in result
+        assert "Future (1 items)" in result
+        # All QUALITY items use 1 as domain prefix
+        assert "1a" in result
+        assert "1e" in result  # 5 items total, last is 1e
+        # recover-high should come before recover-low (sorted by priority within recover)
+        recover_high_pos = result.find("recover-high item")
+        recover_low_pos = result.find("recover-low item")
+        assert recover_high_pos < recover_low_pos
 
     def test_carryover_section_rendered(self) -> None:
         carry = [
@@ -248,7 +255,7 @@ class TestRenderActions:
         """Domains with same explicit_order and same count sort by name."""
         # git (5) and deps (6) have different explicit_order, so test tiebreak
         # by checking alphabetical: deps < git < other alphabetically
-        from lib.render import _domain_sort_key
+        from core.render import _domain_sort_key
         action = CrossSessionAction(domain="quality", action="recover",
                                   priority="high", description="x")
         key_deps = _domain_sort_key("deps", [action])

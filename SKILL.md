@@ -13,6 +13,14 @@ supports_multiple: true  # multiple findings per input; simultaneous invocations
 enforcement: advisory
 persistence: none
 scope: session
+suggest: []
+workflow_steps:
+  - collect_input: Gather text from session transcript or inline input
+  - extract_actions: Parse recommendations, findings, gaps
+  - classify_findings: Assign domain, action, priority, effort
+  - check_dependencies: Identify causal relationships
+  - render_rns: Format as domain-grouped selectable actions
+  - present_selection: Display with "0 — do all" footer
 ---
 
 # RNS — Recommended Next Steps from Arbitrary Output
@@ -106,13 +114,19 @@ RNS tries three sources in order, stopping at the first that yields content:
 ### Source A — Inline text (if provided)
 If `/rns {text}` was called with inline text, use that directly.
 
-### Source B — Session transcript (if no inline text)
-If called alone (`/rns`), read the **full session transcript** to extract action items from all assistant messages. Do not limit to the last message only.
+### Source B — Current session context (if no inline text)
+If called alone (`/rns`), extract action items from the **current conversation context** (the LLM already has all user/assistant messages in context). Process the full conversation for action items — do not limit to the last message only.
 
-**Transcript source** (`lib/chain.py`):
+Only fall back to transcript file reading when the conversation context is insufficient (e.g., session restored from compact with limited context).
+
+**Transcript fallback** (`lib/chain.py`):
 ```python
+import sys
+from pathlib import Path
+# Resolve skill-root-relative to avoid CWD-dependency import failures
+sys.path.insert(0, str(Path(__file__).parent))
 from lib.chain import get_session_transcript_text
-text = get_session_transcript_text()  # returns all user+assistant messages
+text = get_session_transcript_text()  # Use only when context-first approach fails
 ```
 
 If the transcript is unavailable or empty, log a warning and proceed to Source C.

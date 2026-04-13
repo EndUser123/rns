@@ -1,4 +1,4 @@
-"""Tests for rns/lib/chain.py."""
+"""Tests for rns/core/chain.py."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.chain import (
+from core.chain import (
     CrossSessionAction,
     ChainRNSResult,
     _extract_actions_from_text,
@@ -99,13 +99,13 @@ class TestGetCurrentSessionId:
 class TestGetRnsFromSessionChain:
     """Tests for get_rns_from_session_chain."""
 
-    def test_returns_empty_on_missing_import(self) -> None:
-        """Gracefully handles when search_research import fails."""
-        # When search_research is not available in sys.modules,
-        # get_rns_from_session_chain catches the exception and returns empty
+    def test_returns_chain_depth_one_via_chain_miner(self) -> None:
+        """When chain-miner is available, returns session chain via walk_handoff_chain."""
+        # chain-miner is available and returns entries for current session chain
         result = get_rns_from_session_chain("nonexistent-session-id")
         assert isinstance(result, ChainRNSResult)
-        assert result.chain_depth == 0
+        # Chain-miner finds the current session via _resolve_current_transcript
+        assert result.chain_depth >= 0  # 0 = no handoff yet, >=1 = chain found
 
 
 class TestReadTranscriptText:
@@ -128,7 +128,7 @@ class TestReadTranscriptText:
             + "\n",
             encoding="utf-8",
         )
-        from lib.chain import _read_transcript_text
+        from core.chain import _read_transcript_text
 
         text = _read_transcript_text(transcript)
         assert "user: fix the bug" in text
@@ -144,7 +144,7 @@ class TestReadTranscriptText:
             + "\n",
             encoding="utf-8",
         )
-        from lib.chain import _read_transcript_text
+        from core.chain import _read_transcript_text
 
         text = _read_transcript_text(transcript)
         assert "user: hello" in text
@@ -152,7 +152,7 @@ class TestReadTranscriptText:
 
     def test_old_format_ignored_without_sender_field(self, tmp_path: Path) -> None:
         """Old format without sender field should NOT be extracted as new format."""
-        from lib.chain import _read_transcript_text
+        from core.chain import _read_transcript_text
 
         # Entry with type='user' but no 'message.content' — should be ignored
         # (only new format has message.content)

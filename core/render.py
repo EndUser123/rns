@@ -32,7 +32,29 @@ DOMAIN_MAP: dict[str, DomainDef] = {
 
 
 ACTION_ORDER = ("recover", "prevent", "realize")
+ACTION_LABELS: dict[str, str] = {
+    "recover": "Recovery",
+    "prevent": "Preserve",
+    "realize": "Future",
+}
 PRIORITY_ORDER = ("critical", "high", "medium", "low")
+
+
+# ---------------------------------------------------------------------------
+# Format constants
+# ---------------------------------------------------------------------------
+
+# Max tag width: just the dot emoji + space (🔴 + space = 2)
+ACTION_TAG_MAX_WIDTH = 2
+
+# Priority dot mapping — replaces priority text in tags
+# critical=red, high=orange, medium=yellow, low=blue
+PRIORITY_DOT_MAP: dict[str, str] = {
+    "critical": "🔴",
+    "high":     "🟠",
+    "medium":   "🟡",
+    "low":      "🔵",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -44,10 +66,17 @@ class RenderOptions:
     """Formatting options for the RNS renderer."""
     show_file_refs: bool = True
     show_session_id: bool = False
-    show_effort: bool = False
+    show_effort: bool = True  # Show effort estimate in item line (e.g. "[E:~5min]")
+    show_owner: bool = True  # Show owner annotation (e.g. "{owner}")
     unverified_marker: str = "[UNVERIFIED]"
     domain_group_order: list[str] | None = None  # None = auto-sort by findings count
     max_description_chars: int | None = None
+    align_tags: bool = True  # Pad action tags to consistent width
+    # Filtering: None = show all, list = show only matching
+    domains: list[str] | None = None  # e.g. ["quality", "tests"] — None = all
+    priorities: list[str] | None = None  # e.g. ["critical", "high"] — None = all
+    show_done: bool = True  # Show DONE section for completed items
+    done_marker: str = "✓"
 
 
 DEFAULT_OPTIONS = RenderOptions()
@@ -90,6 +119,20 @@ def _subletter(idx: int) -> str:
     return ''.join(reversed(result))
 
 
+def _filter_actions(
+    actions: list[CrossSessionAction],
+    domains: list[str] | None,
+    priorities: list[str] | None,
+) -> list[CrossSessionAction]:
+    """Filter actions by domain and priority."""
+    result = actions
+    if domains:
+        result = [a for a in result if a.domain in domains]
+    if priorities:
+        result = [a for a in result if a.priority in priorities]
+    return result
+
+
 def render_actions(
     actions: list[CrossSessionAction],
     carryover: list[CrossSessionAction] | None = None,
@@ -109,16 +152,23 @@ def render_actions(
     opts = _resolve_options(format_options)
     carryover = carryover or []
 
+    # Separate done and pending items
+    done_items = [a for a in actions if a.done] if opts.show_done else []
+    pending_items = [a for a in actions if not a.done]
+
+    # Apply filters to pending items
+    pending_items = _filter_actions(pending_items, opts.domains, opts.priorities)
+
     # Group by domain
     groups: dict[str, list[CrossSessionAction]] = {}
-    for action in actions:
+    for action in pending_items:
         groups.setdefault(action.domain, []).append(action)
 
     # Build output lines
     lines: list[str] = []
     domain_num = 0
 
-    # Render each domain group in priority order (recover → prevent → realize)
+    # Render each domain group
     for domain_key, domain_actions in sorted(
         groups.items(),
         key=lambda kv: _domain_sort_key(kv[0], kv[1]),
@@ -127,19 +177,38 @@ def render_actions(
         emoji, label = _get_domain_def(domain_key)
         lines.append(f"{domain_num} {emoji} {label} ({len(domain_actions)})")
 
-        # Sort actions: by action order then priority order
-        sorted_actions = sorted(
-            domain_actions,
-            key=lambda a: (
-                ACTION_ORDER.index(a.action) if a.action in ACTION_ORDER else len(ACTION_ORDER),
-                PRIORITY_ORDER.index(a.priority) if a.priority in PRIORITY_ORDER else len(PRIORITY_ORDER),
-            ),
-        )
+        # Group by action type (recover, prevent, realize)
+        action_groups: dict[str, list[CrossSessionAction]] = {}
+        for action in domain_actions:
+            action_groups.setdefault(action.action, []).append(action)
 
-        for idx, action in enumerate(sorted_actions, start=1):
-            subletter = _subletter(idx)
-            line = f"  {domain_num}{subletter} {render_action_line(action, opts)}"
-            lines.append(line)
+        # Render each action subgroup in order
+        # Item counter per domain (all items in QUALITY use 1 as prefix: 1a, 1b, 1c...)
+        item_counter = 0
+        for action_key in ACTION_ORDER:
+            if action_key not in action_groups:
+                continue
+            subgroup = action_groups[action_key]
+            # Sort by priority within action group
+            sorted_subgroup = sorted(
+                subgroup,
+                key=lambda a: (
+                    PRIORITY_ORDER.index(a.priority) if a.priority in PRIORITY_ORDER else len(PRIORITY_ORDER),
+                ),
+            )
+            label = ACTION_LABELS.get(action_key, action_key.title())
+            lines.append(f"  {label} ({len(sorted_subgroup)} items)")
+
+            prev_priority = None
+            for action in sorted_subgroup:
+                # Add blank line between priority bands
+                if prev_priority is not None and action.priority != prev_priority:
+                    lines.append("")
+                item_counter += 1
+                subletter = _subletter(item_counter)
+                line = f"    {domain_num}{subletter} {render_action_line(action, opts)}"
+                lines.append(line)
+                prev_priority = action.priority
 
         lines.append("")  # blank line after domain group
 
@@ -155,8 +224,18 @@ def render_actions(
                 lines.append(f"  (from session {action.session_id[:8]}...)")
         lines.append("")
 
+    # Done section
+    if done_items and opts.show_done:
+        done_num = domain_num + 1
+        lines.append(f"{done_num} ✓ DONE ({len(done_items)} items)")
+        for idx, action in enumerate(done_items, start=1):
+            subletter = _subletter(idx)
+            action_line = _render_action_line_done(action, opts)
+            lines.append(f"  {done_num}{subletter} {action_line}")
+        lines.append("")
+
     # Do-all footer
-    total = len(actions) + len(carryover)
+    total = len(pending_items) + len(carryover)
     if total > 0:
         lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"0 — Do ALL Recommended Next Actions ({total} items)")
@@ -165,8 +244,16 @@ def render_actions(
 
 
 def render_action_line(action: CrossSessionAction, opts: RenderOptions) -> str:
-    """Render a single action as a compact line string."""
-    parts = [f"[{action.action}/{action.priority}]"]
+    """Render a single action as a compact line string with all annotations."""
+    # Tag is just the priority dot (action is implied by subgroup header)
+    dot = PRIORITY_DOT_MAP.get(action.priority, "⚪")
+    tag = f"{dot} "
+
+    # Pad tag to fixed width for vertical alignment of descriptions across all items
+    if opts.align_tags:
+        tag = tag.ljust(ACTION_TAG_MAX_WIDTH)
+
+    parts = [tag]
 
     # Description
     desc = action.description
@@ -174,15 +261,44 @@ def render_action_line(action: CrossSessionAction, opts: RenderOptions) -> str:
         desc = _visual_truncate(desc, opts.max_description_chars)
     parts.append(desc)
 
+    # Effort estimate
+    if opts.show_effort and action.effort:
+        parts.append(f"[E:{action.effort}]")
+
     # Unverified marker
     if action.unverified:
         parts.append(opts.unverified_marker)
+
+    # Owner annotation
+    if opts.show_owner and action.owner:
+        parts.append(f"{{{action.owner}}}")
 
     # File reference
     if opts.show_file_refs and action.file_ref:
         parts.append(f"@ {action.file_ref}")
 
-    return " ".join(parts)
+    line = " ".join(parts)
+
+    # Dependency annotations (rendered below the item)
+    deps = []
+    if action.blocks:
+        deps.append(f"[blocks: {action.blocks}]")
+    if action.caused_by:
+        deps.append(f"[caused-by: {action.caused_by}]")
+    if deps:
+        line += "\n    " + " ".join(deps)
+
+    return line
+
+
+def _render_action_line_done(action: CrossSessionAction, opts: RenderOptions) -> str:
+    """Render a completed action with strikethrough."""
+    line = render_action_line(action, opts)
+    # Strikethrough the description (everything between first space after priority dot and first @ or annotation)
+    parts = line.split(" ", 1)
+    if len(parts) > 1:
+        return parts[0] + " ~~" + parts[1].replace(" @ ", "~~ @ ") + "~~"
+    return line
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +343,7 @@ def render_machine_format(
 
     Format:
         RNS|D|{num}|{emoji}|{label}
-        RNS|A|{num}{sub}|{domain}|E:{effort}|{action}/{priority}|{desc}|{file_ref}
+        RNS|A|{num}{sub}|{domain}|E:{effort}|{action}/{priority}|{desc}|{file_ref}|owner={owner}|done={done}|caused_by={caused_by}|blocks={blocks}|unverified={unverified}
         RNS|Z|0|NONE
     """
     carryover = carryover or []
@@ -257,10 +373,15 @@ def render_machine_format(
             desc = action.description.replace("|", "\\|")
             file_ref = action.file_ref or ""
             unverified = "1" if action.unverified else "0"
+            owner = action.owner or ""
+            done = "1" if action.done else "0"
+            caused_by = action.caused_by or ""
+            blocks = action.blocks or ""
             lines.append(
                 f"RNS|A|{domain_num}{subletter}|{action.domain}|"
                 f"E:{effort}|{action.action}/{action.priority}|"
-                f"{desc}|{file_ref}|unverified={unverified}"
+                f"{desc}|{file_ref}|owner={owner}|done={done}|"
+                f"caused_by={caused_by}|blocks={blocks}|unverified={unverified}"
             )
 
     if carryover:
@@ -272,10 +393,15 @@ def render_machine_format(
             desc = action.description.replace("|", "\\|")
             file_ref = action.file_ref or ""
             unverified = "1" if action.unverified else "0"
+            owner = action.owner or ""
+            done = "1" if action.done else "0"
+            caused_by = action.caused_by or ""
+            blocks = action.blocks or ""
             lines.append(
                 f"RNS|A|{domain_num}{subletter}|carryover|"
                 f"E:{effort}|{action.action}/{action.priority}|"
-                f"{desc}|{file_ref}|unverified={unverified}"
+                f"{desc}|{file_ref}|owner={owner}|done={done}|"
+                f"caused_by={caused_by}|blocks={blocks}|unverified={unverified}"
             )
 
     lines.append("RNS|Z|0|NONE")

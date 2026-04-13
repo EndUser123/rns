@@ -1,0 +1,8 @@
+{
+    "name": "rns",
+    "description": "Recommended Next Steps from Arbitrary Output — extracts actionable items from LLM output with recover/prevent/realize tags, priority, and file:line references",
+    "author": {
+        "name": "Bruce Thomson"
+    },
+    "version": "1.3.0"
+}
