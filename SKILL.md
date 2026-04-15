@@ -1,7 +1,7 @@
 ---
 name: rns
 description: Dynamic actions from findings w/ recover/prevent/realize tags, priority, file:line. Converts unstructured LLM output to selectable RNS actions.
-version: 1.2.1
+version: 1.3.0
 triggers:
   - "/rns"
   - "/rns {text}"
@@ -17,6 +17,7 @@ suggest: []
 workflow_steps:
   - collect_input: Gather text from session transcript or inline input
   - extract_actions: Parse recommendations, findings, gaps
+  - verify_gates: Run mandatory pre-emission gates (verifiability, no over-extraction, completeness, no fabrication)
   - classify_findings: Assign domain, action, priority, effort
   - check_dependencies: Identify causal relationships
   - render_rns: Format as domain-grouped selectable actions
@@ -162,22 +163,52 @@ current_items, carryover_items = get_current_rns_items()
 - Findings labeled with IDs (COMP-001, TEST-001, etc.)
 - Anything the user has expressed dissatisfaction with
 
-## Step 2 — Classify Each Finding
+## Step 2 — Mandatory Pre-Emission Verification Gates
 
-For each action item extracted, classify:
+Every action item must pass these gates before it appears in RNS output. An item that fails a gate is either: (a) verified and emitted, (b) marked `[UNVERIFIED]` and emitted, or (c) dropped. It is **never emitted as a verified-sounding item without passing a gate**.
 
-| Field | Values | How to Determine |
-|-------|--------|------------------|
-| **Domain** | quality, tests, docs, security, performance, git, deps, other | What type of work is needed |
-| **Action** | recover, prevent, realize | recover=fix something broken; prevent=guard against future failure; realize=capture opportunity/extension |
-| **Priority** | critical > high > medium > low | Explicit label or implied severity |
-| **Effort** | ~2min, ~5min, ~15min, ~30min, ~1hr | Estimated from scope |
-| **Reversibility** | 1.0–2.0 score | See Reversibility Scale below |
-| **Verified** | [UNVERIFIED] marker | Path B (heuristic extraction) items are marked `[UNVERIFIED]` since they are inferred, not confirmed. Path A items (explicit RNS tags) have no marker. |
+### Gate A — Verifiability Check
 
-## Action-Extraction Prompts
+For every action item, one of:
 
-Before emitting RNS output, `/rns` should run a short internal action-extraction check:
+- **VERIFIED**: You personally confirmed the file, symbol, line number, or behavior exists in the current codebase this session (via Read, Grep, Glob, or Bash with actual output).
+- **[UNVERIFIED]**: The item is plausible but you did not confirm it. Mark it `[UNVERIFIED]` in the action line. The `[UNVERIFIED]` tag is a safety net, not a license to skip Gate B.
+
+**Required verification for gap claims**: Any item that claims something is "missing", "doesn't exist", "not implemented", or "no helper for X" requires a concrete existence check (grep, glob, or file read) before emission. A gap claim without a check is automatically `[UNVERIFIED]`.
+
+**Required verification for file:line citations**: If you cite `@ file:line`, you must have seen the relevant code in this session. If you cite a line number, the number must come from actual tool output, not from memory or assumption.
+
+### Gate B — No Over-Extraction Check
+
+Ask: "What would a weaker model over-extract here and turn into noisy action spam?"
+
+Before each item:
+- Is this a genuine gap or a speculative extrapolation?
+- Would this item survive if I re-read the source material?
+- Could this item be a false positive from the analysis?
+
+Drop any item that is primarily inferred rather than derived from the source material.
+
+### Gate C — Completeness Check
+
+[COMPLETENESS] Have **all** input rows/items been accounted for? Each must have exactly one disposition: MAPPED (has an action above), REJECTED (explicit rationale), or DEFERRED (named owner + trigger). Severity alone is NOT a valid exclusion criterion.
+
+### Gate D — No Fabrication Check
+
+Do NOT emit an item that claims:
+- A specific file or symbol exists without grep/glob confirming it
+- A gap exists without checking for existing code that might fill it
+- A line number you did not personally see in tool output this session
+
+If a finding cannot be verified or made concrete, phrase it generically with `[UNVERIFIED]` rather than inventing specifics.
+
+---
+
+**When all gates fail**: If you cannot verify a finding and cannot phrase it safely, drop the item rather than emit it as verified noise.
+
+### Self-Check Prompts (reference)
+
+These prompts inform the gates above — use them to pressure-test each item:
 
 - What item here is still a finding or complaint rather than an actionable next step?
 - What actions are duplicates, symptoms, or consequences of the same root issue?
@@ -189,9 +220,6 @@ Before emitting RNS output, `/rns` should run a short internal action-extraction
 - What recommendation belongs to a different owning skill, not the current executor?
 - What would a weaker model over-extract here and turn into noisy action spam?
 - What part of this output would be hard to reverse if the action is wrong?
-- [COMPLETENESS] Have ALL input rows been accounted for? Each row must have exactly one disposition: MAPPED, REJECTED (explicit rationale), or DEFERRED (named owner + trigger). Severity alone is NOT a valid exclusion criterion — flag any row absent from output without explicit disposition.
-
-These are internal self-check prompts. They are not default user-facing questions and should only surface to the user when `/rns` is genuinely blocked and cannot proceed safely without clarification.
 
 ## Step 3 — Check for Dependencies
 
@@ -264,8 +292,9 @@ Where: `RNS|D|` = domain header, `RNS|A|` = action item, `RNS|Z|` = terminator. 
 
 ## Constraints
 
-- Do NOT fabricate file paths or line numbers. Only cite where evidence supports it.
-- If a finding cannot be made concrete (no file, no scope), phrase it generically but still include it.
+- **Do NOT fabricate file paths or line numbers.** Only cite where evidence supports it. A `@ file:line` without personal tool confirmation is a gate violation.
+- **Gap claims require verification.** Any item claiming something is "missing", "doesn't exist", or "not implemented" must pass Gate A before emission. If unverified, mark `[UNVERIFIED]` or drop — never emit as verified.
+- If a finding cannot be made concrete (no file, no scope), phrase it generically but still include it with `[UNVERIFIED]`.
 - Do NOT skip findings because they're "obvious" — include everything.
 - Do NOT invent severity ratings not present in the source. Infer only when the source implies but doesn't label.
 
